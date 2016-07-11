@@ -1,0 +1,129 @@
+Welcome to the fun part of RNAseq… Differential Gene Expression Analysis
+
+Once you have a reference transcriptome, the rest is relatively easy.
+The general workflow is as follows:
+1. align trimmed reads to reference transcriptome (bowtie, bwa, shrimp, etc)
+2. generate matrix summary of read statistics (RSEM, eXpress)
+3. statistically compare read-contig values (edgeR, DEseq2)
+4. generate figures (heatmaps, volcano plots, etc)
+5. As Harold Zakon says, now is when the real work begins - read and think about your data.
+
+Due to time constraints, we will not be running an alignment. We will instead start with a matrix file of values for differential gene expression.
+
+Open R on your computer. 
+type the following in to install the packages you will need:
+
+source("http://bioconductor.org/biocLite.R")
+biocLite("edgeR")
+biocLite("cluster")
+biocLite("Biobase")
+biocLite("qvalue")
+
+Now that you have installed the edgeR package, we need to open the program within R:
+library(edgeR)
+
+Read your matrix table in & define your groups. Be sure to have your working directory set to the location of your files:
+---------
+samples <- read.delim(file = "samples.txt", stringsAsFactors = TRUE)
+rnaseqMatrix = read.delim(file = "counts.txt", row.names=1, stringsAsFactors = FALSE)
+rnaseqMatrix = rnaseqMatrix[rowSums(rnaseqMatrix)>=2,]
+conditions = samples$pop
+----------
+
+Next, run the edgeR statistical program, which will run an ANOVA between each group.
+---------
+exp_study = DGEList(counts=rnaseqMatrix, group=conditions)
+exp_study = calcNormFactors(exp_study)
+exp_study = estimateCommonDisp(exp_study)
+exp_study = estimateTagwiseDisp(exp_study)
+et = exactTest(exp_study)
+tTags = topTags(et,n=NULL)
+-----------
+
+Write your results to a file:
+write.table(tTags, file='edgeR.DE_results', sep='	', quote=F, row.names=T)
+
+Now we are going to make a Volcano Plot to visualize our data:
+---------
+source("rnaseq_plot_funcs.R")
+pdf("edgeR.DE_results.MA_n_Volcano.pdf")
+result_table = tTags$table
+plot_MA_and_Volcano(result_table$logCPM, result_table$logFC, result_table$FDR)
+dev.off()
+----------
+
+Great. We have a volcano plot, but it would be great to generate a heat map. Lets do that now:
+
+First, lets load the packages we will need:
+library(cluster)
+library(Biobase)
+library(qvalue)
+
+Now load some scripts and data:
+source("heatmap.3.R")
+source("misc_rnaseq_funcs.R")
+source("pairs3.R")
+
+primary_data = read.table("diffExpr.P0.05_C2.matrix", header=T, com='', sep="\t", row.names=1)
+primary_data = as.matrix(primary_data)
+
+Now we are going to create a correlation matrix:
+---------
+data = primary_data
+sample_types = colnames(data)
+nsamples = length(sample_types)
+sample_colors = rainbow(nsamples)
+sample_type_list = list()
+for (i in 1:nsamples) {
+    sample_type_list[[sample_types[i]]] = sample_types[i]
+}
+sample_factoring = colnames(data)
+for (i in 1:nsamples) {
+    sample_type = sample_types[i]
+    replicates_want = sample_type_list[[sample_type]]
+    sample_factoring[ colnames(data) %in% replicates_want ] = sample_type
+}
+data = log2(data+1)
+sample_factoring = colnames(data)
+for (i in 1:nsamples) {
+    sample_type = sample_types[i]
+    replicates_want = sample_type_list[[sample_type]]
+    sample_factoring[ colnames(data) %in% replicates_want ] = sample_type
+}
+sampleAnnotations = matrix(ncol=ncol(data),nrow=nsamples)
+for (i in 1:nsamples) {
+  sampleAnnotations[i,] = colnames(data) %in% sample_type_list[[sample_types[i]]]
+}
+sampleAnnotations = apply(sampleAnnotations, 1:2, function(x) as.logical(x))
+sampleAnnotations = sample_matrix_to_color_assignments(sampleAnnotations, col=sample_colors)
+rownames(sampleAnnotations) = as.vector(sample_types)
+colnames(sampleAnnotations) = colnames(data)
+data = as.matrix(data) # convert to matrix
+write.table(data, file="diffExpr.P0.05_C2.matrix.log2.dat", quote=F, sep='	');
+sample_cor = cor(data, method='pearson', use='pairwise.complete.obs')
+sample_dist = dist(t(data), method='euclidean')
+hc_samples = hclust(sample_dist, method='complete')
+pdf("diffExpr.P0.05_C2.matrix.log2.sample_cor_matrix.pdf")
+heatmap.3(sample_cor, dendrogram='both', Rowv=as.dendrogram(hc_samples), Colv=as.dendrogram(hc_samples), col = greenred(75), scale='none', symm=TRUE, key=TRUE,density.info='none', trace='none', symkey=FALSE, margins=c(10,10), cexCol=1, cexRow=1, cex.main=0.75, main=paste("sample correlation matrix
+", "diffExpr.P0.05_C2.matrix.log2") )
+dev.off()
+----------------
+
+And next we are going to create a heatmap:
+----------
+gene_cor = NULL
+gene_dist = dist(data, method='euclidean')
+if (nrow(data) <= 1) { message('Too few genes to generate heatmap'); quit(status=0); }
+hc_genes = hclust(gene_dist, method='complete')
+myheatcol = greenred(75)
+data = t(scale(t(data), scale=F)) # center rows, mean substracted
+write.table(data, file="diffExpr.P0.05_C2.matrix.log2.centered.dat", quote=F, sep='	');
+heatmap_data = data
+pdf("diffExpr.P0.05_C2.matrix.log2.centered.genes_vs_samples_heatmap.pdf")
+heatmap.3(heatmap_data, dendrogram='both', Rowv=as.dendrogram(hc_genes), Colv=as.dendrogram(hc_samples), col=myheatcol, scale="none", density.info="none", trace="none", key=TRUE, keysize=1.2, cexCol=1, margins=c(10,10), cex.main=0.75, main=paste("samples vs. features
+", "diffExpr.P0.05_C2.matrix.log2.centered" ) )
+dev.off()
+--------------
+
+Finally, lets save all our data:
+save(list=ls(all=TRUE), file="diffExpr.P0.05_C2.matrix.RData")
